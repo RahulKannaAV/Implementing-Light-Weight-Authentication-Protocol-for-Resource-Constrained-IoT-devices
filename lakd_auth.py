@@ -37,7 +37,7 @@ gateway_send_data = {"b1": b1, "KP": KP}
 print(f"Gateway to Sensor {gateway_send_data}")
 
 # Step 3
-store_data = {"b0": b0, "b1": b1, "KP": KP}
+store_data = {AID: {"b0": b0, "b1": b1, "KP": KP}}
 print(f"Sensor and Gateway stores {store_data}")
 
 
@@ -46,12 +46,12 @@ print(f"Sensor and Gateway stores {store_data}")
 # Step 1
 r1 = random.randint(1, 10000)
 T1 = int(time.time())
-concat_results_d1 = AID + store_data["b1"] + str(T1)
+concat_results_d1 = AID + store_data[AID]["b1"] + str(T1)
 h.update(concat_results.encode(encoding="utf-8"))
 d1_hash = h.hexdigest()
 D1 = int(d1_hash, 16) ^ r1
 
-concat_results_d2 = str(r1) + str(T1) + store_data["b0"]
+concat_results_d2 = str(r1) + str(T1) + store_data[AID]["b0"]
 h.update(concat_results_d2.encode(encoding="utf-8"))
 D2 = h.hexdigest()
 
@@ -59,4 +59,10 @@ M1 = {"T1": T1, "AID": AID, "D1": D1, "D2": D2}
 print(f"Sending to Gateway: {M1}")
 
 # Step 2
+T2 = int(time.time())
+difference = abs(T2 - M1["T1"])
+
+if(difference <= T_diff): # acceptable delay
+    xor_r1 =
+
 

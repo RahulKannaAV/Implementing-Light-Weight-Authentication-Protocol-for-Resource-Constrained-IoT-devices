@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Client</title>
+</head>
+<body>
+
+  <button id="sendBtn">Send Random</button>
+
+<script type="module">
+   import { blake2s } from "https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm";
+
+  function computeHash(message, key) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(message);
+
+    const hash = blake2s(data); // ✅ BLAKE2s
+
+    return Array.from(hash)
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+function generateShortId(init_res,length = 4) {
+  const chars = "0123456789";
+  let result = init_res;
+
+  const array = new Uint8Array(length);
+  crypto.getRandomValues(array);
+
+  for (let i = 0; i < length; i++) {
+    result += chars[array[i] % chars.length];
+  }
+
+  return result;
+}
+
+function getRandomNumberFromSensor() {
+  return Math.floor(Math.random() * 1000);
+}
+
+function getDeviceId() {
+  
+  let id = generateShortId("SEN_",4);
+  
+  return id;
+}
+
+function getDeviceSecretKey() {
+  let id = localStorage.getItem("device_secret_key");
+
+  if (!id) {
+    id = generateShortId("SK_",6);
+    localStorage.setItem("device_secret_key", id);
+  }
+
+  return id;
+}
+
+function getDeviceIdentityKey() {
+
+  let id = localStorage.getItem("device_id_key");
+
+  if (!id) {
+    id = generateShortId("SID_",6);
+    localStorage.setItem("device_id_key", id);
+  }
+
+  return id;
+}  
+
+async function sendRandom() {
+  // Generate secure random number
+  const arr = new Uint32Array(1);
+  window.crypto.getRandomValues(arr);
+
+  const AID = getDeviceId();
+  const kS = getDeviceSecretKey(); // Sensor's secret key
+  const r0 = getRandomNumberFromSensor();
+  const IDs = getDeviceIdentityKey();
+
+  const response = await fetch("http://172.16.57.46:5000/receive", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      AID: AID,
+      kS: kS,
+      r0: 587,
+      IDs: IDs
+    })
+  });
+
+  const data = await response.json();
+  console.log(data);
+
+  // const hash = computeHash("SID_0380:SK_138427:587");
+
+  // console.log("Hash:", hash);
+}
+document.getElementById("sendBtn").addEventListener("click", sendRandom);
+</script>
+
+</body>
+</html>
