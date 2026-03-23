@@ -5,11 +5,12 @@
 </head>
 <body>
 
-  <button id="sendBtn">Send Random</button>
+  <button id="sendBtn">Authenticate</button>
 
 <script type="module">
    import { blake2s } from "https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm";
 
+  const sensorData = {};
   function computeHash(message, key) {
     const encoder = new TextEncoder();
     const data = encoder.encode(message);
@@ -36,7 +37,7 @@ function generateShortId(init_res,length = 4) {
 }
 
 function getRandomNumberFromSensor() {
-  return Math.floor(Math.random() * 1000);
+  return Math.ceil(Math.random() * 999);
 }
 
 function getDeviceId() {
@@ -73,31 +74,44 @@ async function sendRandom() {
   // Generate secure random number
   const arr = new Uint32Array(1);
   window.crypto.getRandomValues(arr);
-
+  
   const AID = getDeviceId();
   const kS = getDeviceSecretKey(); // Sensor's secret key
   const r0 = getRandomNumberFromSensor();
   const IDs = getDeviceIdentityKey();
-
-  const response = await fetch("http://172.16.57.46:5000/receive", {
+  const b0_concat_result = `${IDs}:${kS}:${r0}`;
+  const b0 = computeHash(b0_concat_result);
+  
+  const response = await fetch("http://172.16.57.46:5000/reg_1", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
       AID: AID,
-      kS: kS,
-      r0: 587,
-      IDs: IDs
+      r0: r0,
+      b0: b0
     })
   });
-
+  
   const data = await response.json();
   console.log(data);
-
-  // const hash = computeHash("SID_0380:SK_138427:587");
-
-  // console.log("Hash:", hash);
+  
+  const gatewayResponse = await fetch(`http://172.16.57.46:5000/reg_2?b0=${b0}`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json"
+    },
+  });
+  
+  const gatewayData = await gatewayResponse.json();
+  console.log(gatewayData)
+  sensorData.KP = gatewayData["KP"];
+  sensorData.b1 = gatewayData["b1"];
+  sensorData.b0 = b0;
+  
+  console.log(`Stored in Sensor: ${JSON.stringify(sensorData)}`);
+  
 }
 document.getElementById("sendBtn").addEventListener("click", sendRandom);
 </script>
