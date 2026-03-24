@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Sensor Client</title>
+</head>
+<body>
+
+<button id="sendBtn">Authenticate</button>
+
+<script type="module">
+import { blake2s } from "https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm";
+
+const LOCALHOST = "http://172.16.57.46:5000";
+const sensorData = {};
+
+// --- Hash helper ---
+function computeHash(message) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(message);
+  const hash = blake2s(data);
+  return Array.from(hash).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// --- Random bytes (for r1) ---
+function getRandomBytes(length = 32) {
+  const arr = new Uint8Array(length);
+  crypto.getRandomValues(arr);
+  return arr;
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// --- XOR helper (hex ⊕ hex) ---
+function xorHexWithHex(hex1, hex2) {
+  const b1 = hex1.match(/.{1,2}/g).map(b => parseInt(b, 16));
+  const b2 = hex2.match(/.{1,2}/g).map(b => parseInt(b, 16));
+
+  const result = b1.map((b, i) => b ^ b2[i]);
+
+  return result.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// --- ID helpers ---
+function generateShortId(prefix, length = 4) {
+  const chars = "0123456789";
+  let result = prefix;
+  const array = new Uint8Array(length);
+  crypto.getRandomValues(array);
+  for (let i = 0; i < length; i++) {
+    result += chars[array[i] % chars.length];
+  }
+  return result;
+}
+
+function getDeviceId() {
+  return generateShortId("SEN_");
+}
+
+function getDeviceSecretKey() {
+  let id = localStorage.getItem("device_secret_key");
+  if (!id) {
+    id = generateShortId("SK_", 6);
+    localStorage.setItem("device_secret_key", id);
+  }
+  return id;
+}
+
+function getDeviceIdentityKey() {
+  let id = localStorage.getItem("device_id_key");
+  if (!id) {
+    id = generateShortId("SID_", 6);
+    localStorage.setItem("device_id_key", id);
+  }
+  return id;
+}
+
+// --- Small random (for r0 only) ---
+function getRandomNumber() {
+  return Math.floor(Math.random() * 255) + 1;
+}
+
+// --- Main flow ---
+async function sendRandom() {
+
+  const AID = getDeviceId();
+  const kS = getDeviceSecretKey();
+  const IDs = getDeviceIdentityKey();
+  const r0 = getRandomNumber();
+
+  // --- Compute b0 ---
+  const b0 = computeHash(`${IDs}:${kS}:${r0}`);
+
+  // --- Registration Step 1 ---
+  await fetch(`${LOCALHOST}/reg_1`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ AID, r0, b0 })
+  });
+
+  // --- Registration Step 2 ---
+  const reg2 = await fetch(`${LOCALHOST}/reg_2?b0=${b0}`);
+  const reg2Data = await reg2.json();
+
+  sensorData.b1 = reg2Data.b1;
+  sensorData.b0 = b0;
+
+  // =========================
+  // 🔐 AUTHENTICATION
+  // =========================
+
+  const T1 = Date.now();
+
+  // ✔️ Generate full-length r1 (32 bytes)
+  const r1_bytes = getRandomBytes(32);
+  const r1_hex = bytesToHex(r1_bytes);
+
+  // ✔️ Compute D1 = H ⊕ r1
+  const d1Hash = computeHash(`${AID}:${sensorData.b1}:${T1}`);
+  const D1 = xorHexWithHex(d1Hash, r1_hex);
+
+  // ✔️ Compute D2 = H(r1 || T1 || b0)
+  const D2 = computeHash(`${r1_hex}:${T1}:${sensorData.b0}`);
+
+  console.log("r1:", r1_hex);
+  console.log("D1:", D1);
+  console.log("D2:", D2);
+
+  const M1 = { T1, AID, D1, D2 };
+
+  // --- Send to gateway ---
+  await fetch(`${LOCALHOST}/auth_1`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(M1)
+  });
+
+  // --- Receive auth result ---
+  const auth2 = await fetch(`${LOCALHOST}/auth_2`);
+  const result = await auth2.json();
+
+  console.log("Gateway response:", result);
+}
+
+document.getElementById("sendBtn").addEventListener("click", sendRandom);
+
+</script>
+</body>
+</html>
