@@ -9,6 +9,7 @@
 
 <script type="module">
    import { blake2s } from "https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm";
+  const LOCALHOST = "http://172.16.57.46:5000";
 
   const sensorData = {};
   function computeHash(message, key) {
@@ -37,7 +38,17 @@ function generateShortId(init_res,length = 4) {
 }
 
 function getRandomNumberFromSensor() {
-  return Math.ceil(Math.random() * 999);
+  return Math.ceil(Math.random() * 255);
+}
+
+function xorHexWithInt(hex, num) {
+  const bytes = hex.match(/.{1,2}/g).map(b => parseInt(b, 16));
+
+  const result = bytes.map(b => b ^ num);
+
+  return result
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 function getDeviceId() {
@@ -82,7 +93,8 @@ async function sendRandom() {
   const b0_concat_result = `${IDs}:${kS}:${r0}`;
   const b0 = computeHash(b0_concat_result);
   
-  const response = await fetch("http://172.16.57.46:5000/reg_1", {
+  // Registration - Step 1
+  const response = await fetch(`${LOCALHOST}/reg_1`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -97,7 +109,8 @@ async function sendRandom() {
   const data = await response.json();
   console.log(data);
   
-  const gatewayResponse = await fetch(`http://172.16.57.46:5000/reg_2?b0=${b0}`, {
+  // Registration - Step 2
+  const gatewayResponse = await fetch(`${LOCALHOST}/reg_2?b0=${b0}`, {
     method: "GET",
     headers: {
       "Content-Type": "application/json"
@@ -106,12 +119,57 @@ async function sendRandom() {
   
   const gatewayData = await gatewayResponse.json();
   console.log(gatewayData)
+
+  // Registration - Step 3
   sensorData.KP = gatewayData["KP"];
   sensorData.b1 = gatewayData["b1"];
   sensorData.b0 = b0;
   
   console.log(`Stored in Sensor: ${JSON.stringify(sensorData)}`);
+ 
+  // Authentication - Step 1
+  const r1 = getRandomNumberFromSensor();
+  const now = new Date();
+  const T1 = now.getTime();
+
+  const d1_concat = `${AID}:${sensorData.b1}:${T1}`;
+  const d1_left = computeHash(d1_concat);
+  const D1 = xorHexWithInt(d1_left, r1);
+  console.log(`D1: ${D1}, ${d1_left} ${r1} `);
+
+  const D2_concat = `${r1}:${T1}:${sensorData.b0}`;
+  const D2 = computeHash(D2_concat);
+  console.log(`D2: ${D2}`);
+
+  const M1 = {
+    T1: T1,
+    AID: AID,
+    D1: D1,
+    D2: D2
+  };
+
+  // Sending to gateway
+  const sendToGateway = await fetch(`${LOCALHOST}/auth_1`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(M1)
+  });
+
+  const authGatewayResponse = await sendToGateway.json();
+  console.log(authGatewayResponse);
+
+  // Authentication - Step 2
+  const receiveFromGateway = await fetch(`${LOCALHOST}/auth_2`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json"
+    }
+  });
+
   
+
 }
 document.getElementById("sendBtn").addEventListener("click", sendRandom);
 </script>
