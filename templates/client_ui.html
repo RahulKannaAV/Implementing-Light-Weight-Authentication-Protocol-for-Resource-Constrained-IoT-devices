@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<button id="sendBtn">Start LAKD Flow</button>
+<button id="removeDevice">Remove Sensor Registration Details</button>
+
+<style>
+  #removeDevice {
+    margin: 0px 25px;
+  }
+</style>
+
+<script type="module">
+import { blake2s } from "https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm";
+
+const server = "http://172.16.218.128:5000";
+const T_diff = 10000;
+let sensorSessionInfo = {};
+
+// ===== UTILS =====
+
+function H(msg){
+  const data = new TextEncoder().encode(msg);
+  const hash = blake2s(data);
+  return Array.from(hash).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+function xorHex(h1,h2){
+  if(!h1 || !h2){
+    console.error("❌ XOR ERROR:", h1, h2);
+    return null;
+  }
+  let a = h1.match(/.{1,2}/g).map(x=>parseInt(x,16));
+  let b = h2.match(/.{1,2}/g).map(x=>parseInt(x,16));
+  return a.map((v,i)=> (v ^ b[i]).toString(16).padStart(2,'0')).join('');
+}
+
+function intToHex32(num){
+  let hex = BigInt(num).toString(16);
+  return hex.padStart(64,'0');
+}
+
+function hexToInt(hex){
+  return BigInt("0x" + hex);
+}
+
+// ===== MAIN FLOW =====
+
+async function start(){
+
+  let checkTime = Date.now();
+  let AID = localStorage.getItem("AID");
+  let kS = localStorage.getItem("kS");
+  let checkObject = JSON.parse(localStorage.getItem("checkObject"));
+
+  if(!AID) {
+    AID = "AID_" + Math.floor(Math.random()*10000);
+    localStorage.setItem("AID", AID);
+  }
+
+  if(!kS) {
+    kS = "KS_" + Math.floor(Math.random()*10000);
+    localStorage.setItem("kS", kS);
+  }
+
+  
+  const deviceHash = H(`${AID}:${kS}`);
+  
+  
+/*
+  if(Object.keys(checkObject).length == 0) {
+    checkObject = {
+          sensor_session_details: sensorSessionInfo,
+          D_fast: H(`${sensorSessionInfo.SK}:${sensorSessionInfo.SID}:${checkTime}:${deviceHash}`),
+          device_hash: deviceHash,
+          T: checkTime
+    };
+    
+    localStorage.setItem("checkObject", JSON.stringify(checkObject));
+  }
+*/
+  if(checkObject) {
+    if(Object.keys(checkObject).length !== 0 && Object.keys(checkObject.sensor_session_details).length != 0) {
+      // D_fast = h(SK || SID || T || DID)
+      const sensorSessionInfo = checkObject.sensor_session_details;
+      const checkTime = checkObject.T;
+      const deviceHash = checkObject.device_hash;
+  
+      const sessionCheckStatus = await fetch(server+"/check-session", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(checkObject)
+      });
+      
+      const checkResponse = await sessionCheckStatus.json();
+      console.log(`Session check response: ${JSON.stringify(checkResponse)}`);
+  
+      if(checkResponse.authenticate == false) {
+        console.log("Skipping LAKD Re-authentication after session verification.");
+        return ;
+      }
+    }
+  }
+  console.log("Device either new/previous session aborted. Starting the LAKD authentication.");
+  console.log("\n===== START =====");
+
+
+
+
+  // ===== REGISTRATION =====
+
+
+  let r0 = Math.floor(Math.random()*255);
+  let r0_hex = intToHex32(r0);
+
+  let b0 = H(`${AID}:${kS}:${r0}`);
+
+  console.log("\n=== REG-1 ===");
+  console.log("AID:", AID);
+  console.log("r0:", r0_hex);
+  console.log("b0:", b0);
+
+  await fetch(server+"/reg_1",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      AID: AID,
+      kS: kS,
+      r0: r0_hex,
+      b0: b0,
+      IDs: "dummy",
+      device_hash: deviceHash
+    })
+  });
+
+  let reg2 = await fetch(server+`/reg_2?b0=${b0}`);
+  let reg2_data = await reg2.json();
+
+  let b1 = reg2_data.b1;
+  let KP = reg2_data.KP;
+
+  console.log("\n=== REG-2 ===");
+  console.log("b1:", b1);
+  console.log("KP:", KP);
+
+  // ===== AUTH STEP 1 =====
+
+  let T1 = Date.now();
+
+  let r1 = Math.floor(Math.random()*255);
+  let r1_hex = intToHex32(r1);
+
+  let D1_hash = H(`${AID}:${b1}:${T1}`);
+  let D1 = xorHex(r1_hex, D1_hash);
+
+  let D2 = H(`${r1_hex}:${T1}:${b0}`);
+
+  console.log("\n=== AUTH-1 ===");
+  console.log("r1:", r1_hex);
+  console.log("D1:", D1);
+  console.log("D2:", D2);
+
+  await fetch(server+"/auth_1",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      T1: T1,
+      AID: AID,
+      D1: D1,
+      D2: D2
+    })
+  });
+
+  // ===== AUTH STEP 2 =====
+
+  let res2 = await fetch(server+"/auth_2");
+  let data2 = await res2.json();
+
+  console.log("\n=== AUTH-2 RESPONSE ===", data2);
+
+  if(!data2.M2){
+    console.log("❌ FAILED:", data2);
+    return;
+  }
+
+  if(!data2.Session) {
+    console.log("Session details not stored in the sensor");
+    return ;
+  }
+
+  console.log(`Session Details: ${JSON.stringify(data2.Session)}`);
+
+  let {T2, D3, D4, D5} = data2.M2;
+
+  // AUTH - STEP 3
+  let T3 = Date.now();
+  if(Math.abs(T3 - T2) > T_diff) {
+    console.log("Time limit exceeded in Authentication Step 3");
+    return ;
+  }
+
+  // ===== VERIFY D3 =====
+
+  let D3_hash = H(`${r1_hex}:${T2}`);
+  let r2_hex = xorHex(D3_hash, D3);
+
+  console.log("\n=== D3 VERIFY ===");
+  console.log("r2:", r2_hex);
+
+  // new idx recovery idx = D4 ⊕ h(b1 || r2) ⊕ r1 ⊕ r2
+  let idx_recovered = xorHex(xorHex(xorHex(D4, H(`${b1}:${r2_hex}`)), r1_hex), r2_hex);
+
+  console.log(`Recovered idx: ${parseInt(idx_recovered)} | KP[idx]: ${KP[parseInt(idx_recovered)]}`);
+  // ===== VERIFY D5 =====
+
+  let idx_dummy = "0".repeat(64); // can't extract idx easily from D4 here
+
+  let D5_calc = H(`${idx_recovered}:${r2_hex}:${b0}:${r1_hex}`);
+
+  console.log("\n=== D5 VERIFY ===");
+  console.log("D5 recv:", D5);
+  console.log("D5 calc (approx):", D5_calc);
+
+  if(D5 != D5_calc) {
+    return ;
+  }
+  console.log("D5 verified from sensor");
+  console.log("\n===== END =====");
+
+  let D6 = H(`${b1}:${r1_hex}:${T3}:${r2_hex}:${KP[parseInt(idx_recovered)]}`);
+  console.log(`D6: ${D6}`);
+  
+  // Sending M3 to gateway
+  const auth3POST = await fetch(server+"/auth_3", {
+    method: "POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({
+      M3: {
+        T3: T3,
+        D6: D6
+      }
+    })
+    }
+  );
+  const auth3Data = await auth3POST.json();
+  console.log(`Auth 3 step completed: ${JSON.stringify(auth3Data)}`);
+
+  const auth4Response = await fetch(server+"/auth_4");
+    const auth4Data = await auth4Response.json();
+  console.log(`Auth 4th Step Response: ${JSON.stringify(auth4Data)}`);
+
+  // AUTH - STEP 5
+  const T5 = Date.now();
+  let M4 = auth4Data.M4;
+  const T4_gateway = M4.T4;
+  
+  if(Math.abs(T5 - T4_gateway) > T_diff) {
+    console.error("Authentication Step-4 Verification Timed out");
+    return ;
+  }
+
+  const D7 = M4.D7;
+  const D7_calc = H(`${b0}:${r1_hex}:${T4_gateway}:${r2_hex}:${KP[parseInt(idx_recovered)]}`);
+  console.log(`D7 (Gateway): ${D7}`);
+  console.log(`D7 (Sensor): ${D7_calc}`);
+
+  if(D7 != D7_calc) {
+    console.error("D7 verification failed in Sensor. Aborting the authentication.");
+    return ;
+  }
+
+  console.log("D7 verification is successful");
+
+  const SK_sensor = H(`${r1_hex}:${r2_hex}:${AID}:${KP[parseInt(idx_recovered)]}`);
+  console.log(`Session Key (sensor): ${SK_sensor}`);
+
+  const new_AID = H(`${AID}:${b0}:${r1_hex}:${r2_hex}`);
+  console.log(`New AID (sensor): ${new_AID}`);
+
+
+  const sessionVerification = await fetch(server+"/verify-session", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      session_key: SK_sensor,
+      device_hash: deviceHash
+    })
+  });
+
+  const verificationResult = await sessionVerification.json();
+  console.log(`Verification Status: ${JSON.stringify(verificationResult)}`);
+
+  const sessionInfo = verificationResult.session_info;
+  sensorSessionInfo = sessionInfo;
+  sensorSessionInfo.SK = SK_sensor;
+  console.log(`Session Info: ${JSON.stringify(sessionInfo)}`);
+  
+  checkObject = {
+          sensor_session_details: sensorSessionInfo,
+          D_fast: H(`${sensorSessionInfo.SK}:${sensorSessionInfo.SID}:${checkTime}:${deviceHash}`),
+          device_hash: deviceHash,
+          T: checkTime
+  };
+    
+  localStorage.setItem("checkObject", JSON.stringify(checkObject));
+  
+}
+
+
+async function removeDevice() {
+  localStorage.clear();
+  console.log("Sensor device de-registered successfully");
+  return ;
+}
+
+
+document.getElementById("sendBtn").addEventListener("click", start);
+document.getElementById("removeDevice").addEventListener("click", removeDevice);
+</script>
+
+</body>
+</html>

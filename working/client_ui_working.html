@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<button id="sendBtn">Start LAKD Flow</button>
+
+<script type="module">
+import { blake2s } from "https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm";
+
+const server = "http://172.16.218.128:5000";
+
+// ===== UTILS =====
+
+function H(msg){
+  const data = new TextEncoder().encode(msg);
+  const hash = blake2s(data);
+  return Array.from(hash).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+function xorHex(h1,h2){
+  if(!h1 || !h2){
+    console.error("❌ XOR ERROR:", h1, h2);
+    return null;
+  }
+  let a = h1.match(/.{1,2}/g).map(x=>parseInt(x,16));
+  let b = h2.match(/.{1,2}/g).map(x=>parseInt(x,16));
+  return a.map((v,i)=> (v ^ b[i]).toString(16).padStart(2,'0')).join('');
+}
+
+function intToHex32(num){
+  let hex = BigInt(num).toString(16);
+  return hex.padStart(64,'0');
+}
+
+function hexToInt(hex){
+  return BigInt("0x" + hex);
+}
+
+// ===== MAIN FLOW =====
+
+async function start(){
+
+  console.log("\n===== START =====");
+
+  // ===== REGISTRATION =====
+
+  let AID = "AID_" + Math.floor(Math.random()*10000);
+  let kS = "KS_" + Math.floor(Math.random()*10000);
+
+  let r0 = Math.floor(Math.random()*255);
+  let r0_hex = intToHex32(r0);
+
+  let b0 = H(`${AID}:${kS}:${r0}`);
+
+  console.log("\n=== REG-1 ===");
+  console.log("AID:", AID);
+  console.log("r0:", r0_hex);
+  console.log("b0:", b0);
+
+  await fetch(server+"/reg_1",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      AID: AID,
+      kS: kS,
+      r0: r0_hex,
+      b0: b0,
+      IDs: "dummy"
+    })
+  });
+
+  let reg2 = await fetch(server+`/reg_2?b0=${b0}`);
+  let reg2_data = await reg2.json();
+
+  let b1 = reg2_data.b1;
+  let KP = reg2_data.KP;
+
+  console.log("\n=== REG-2 ===");
+  console.log("b1:", b1);
+  console.log("KP:", KP);
+
+  // ===== AUTH STEP 1 =====
+
+  let T1 = Date.now();
+
+  let r1 = Math.floor(Math.random()*255);
+  let r1_hex = intToHex32(r1);
+
+  let D1_hash = H(`${AID}:${b1}:${T1}`);
+  let D1 = xorHex(r1_hex, D1_hash);
+
+  let D2 = H(`${r1_hex}:${T1}:${b0}`);
+
+  console.log("\n=== AUTH-1 ===");
+  console.log("r1:", r1_hex);
+  console.log("D1:", D1);
+  console.log("D2:", D2);
+
+  await fetch(server+"/auth_1",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      T1: T1,
+      AID: AID,
+      D1: D1,
+      D2: D2
+    })
+  });
+
+  // ===== AUTH STEP 2 =====
+
+  let res2 = await fetch(server+"/auth_2");
+  let data2 = await res2.json();
+
+  console.log("\n=== AUTH-2 RESPONSE ===", data2);
+
+  if(!data2.M2){
+    console.log("❌ FAILED:", data2);
+    return;
+  }
+
+  let {T2, D3, D4, D5} = data2.M2;
+
+  // ===== VERIFY D3 =====
+
+  let D3_hash = H(`${r1_hex}:${T2}`);
+  let r2_hex = xorHex(D3_hash, D3);
+
+  console.log("\n=== D3 VERIFY ===");
+  console.log("r2:", r2_hex);
+
+  // ===== VERIFY D5 =====
+
+  let idx_dummy = "0".repeat(64); // can't extract idx easily from D4 here
+
+  let D5_calc = H(`${idx_dummy}:${r2_hex}:${b0}:${r1_hex}`);
+
+  console.log("\n=== D5 VERIFY ===");
+  console.log("D5 recv:", D5);
+  console.log("D5 calc (approx):", D5_calc);
+
+  console.log("\n===== END =====");
+}
+
+document.getElementById("sendBtn").addEventListener("click", start);
+
+</script>
+
+</body>
+</html>

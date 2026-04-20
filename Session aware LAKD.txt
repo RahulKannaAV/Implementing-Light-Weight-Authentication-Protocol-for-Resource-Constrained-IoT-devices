@@ -1,0 +1,52 @@
+FINAL SOLUTION (Use This)
+🟢 Phase 1: Normal LAKD (unchanged)
+
+After Step 5 (when SK is generated), add:
+
+SID = h(AID || r1 || r2)
+expiry = t0 + ΔT_session
+count = 0
+last_T = 0
+
+Store at both:
+
+device (localStorage / memory)
+gateway (server DB)
+
+🟡 Phase 2: Fast Re-Authentication (Your Contribution)
+✔ Device sends:
+M_fast = {SID, T, D_fast}
+
+Where:
+
+D_fast = h(SK || SID || T)
+
+
+PSEUDO
+
+if SID not in sessions:
+    run full LAKD
+
+session = sessions[SID]
+
+if current_time > session.expiry:
+    delete session
+    run full LAKD
+
+if T <= session.last_T:
+    reject   # replay or reordering
+
+if session.count >= MAX_REQUESTS:
+    delete session
+    run full LAKD
+
+expected = h(SK || SID || T)
+
+if expected != D_fast:
+    reject
+
+# ✅ ACCEPT
+session.last_T = T
+session.count += 1
+
+https://chatgpt.com/share/69df7d83-f73c-83e8-ba2e-21a776683527

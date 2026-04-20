@@ -9,51 +9,65 @@
 
 <script type="module">
    import { blake2s } from "https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm";
-  const LOCALHOST = "http://172.16.57.46:5000";
+  const LOCALHOST = "http://172.16.218.128:5000";
 
   const sensorData = {};
-  function computeHash(message, key) {
+  function computeHash(message) {
     const encoder = new TextEncoder();
     const data = encoder.encode(message);
-
-    const hash = blake2s(data); // ✅ BLAKE2s
+    const hash = blake2s(data);
 
     return Array.from(hash)
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
   }
 
-function generateShortId(init_res,length = 4) {
-  const chars = "0123456789";
-  let result = init_res;
+  function getRandomBytes(length = 32) {
+    const arr = new Uint8Array(length);
+    crypto.getRandomValues(arr);
+    return arr;
+  }
 
+  function bytesToHex(bytes) {
+    return Array.from(bytes)
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+function generateShortId(prefix, length = 4) {
+  const chars = "0123456789";
+  let result = prefix;
   const array = new Uint8Array(length);
   crypto.getRandomValues(array);
-
   for (let i = 0; i < length; i++) {
     result += chars[array[i] % chars.length];
   }
-
   return result;
 }
 
-function getRandomNumberFromSensor() {
-  return Math.ceil(Math.random() * 255);
+function hexSub256(hex1, hex2) {
+  const mod = 2n ** 256n;
+
+  const a = BigInt("0x" + hex1);
+  const b = BigInt("0x" + hex2);
+
+  const result = (a - b + mod) % mod;
+
+  return result.toString(16).padStart(64, "0");
 }
 
-function xorHexWithInt(hex, num) {
-  const bytes = hex.match(/.{1,2}/g).map(b => parseInt(b, 16));
+function xorHexWithHex(hex1, hex2) {
+  const b1 = hex1.match(/.{1,2}/g).map(b => parseInt(b, 16));
+  const b2 = hex2.match(/.{1,2}/g).map(b => parseInt(b, 16));
 
-  const result = bytes.map(b => b ^ num);
+  const result = b1.map((b, i) => b ^ b2[i]);
 
-  return result
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
+  return result.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function getDeviceId() {
   
-  let id = generateShortId("SEN_",4);
+  let id = generateShortId("SEN_");
   
   return id;
 }
@@ -81,15 +95,22 @@ function getDeviceIdentityKey() {
   return id;
 }  
 
-async function sendRandom() {
+function getRandomNumber() {
+  return Math.floor(Math.random() * 255) + 1;
+}
+
+async function authenticateLAKDToGateway() {
+  const T_diff = 10000;
+
   // Generate secure random number
   const arr = new Uint32Array(1);
   window.crypto.getRandomValues(arr);
   
   const AID = getDeviceId();
   const kS = getDeviceSecretKey(); // Sensor's secret key
-  const r0 = getRandomNumberFromSensor();
+  const r0 = getRandomNumber();
   const IDs = getDeviceIdentityKey();
+
   const b0_concat_result = `${IDs}:${kS}:${r0}`;
   const b0 = computeHash(b0_concat_result);
   
@@ -128,16 +149,19 @@ async function sendRandom() {
   console.log(`Stored in Sensor: ${JSON.stringify(sensorData)}`);
  
   // Authentication - Step 1
-  const r1 = getRandomNumberFromSensor();
+  const r1_bytes = getRandomBytes(32);
+  const r1_hex = bytesToHex(r1_bytes);
+
   const now = new Date();
   const T1 = now.getTime();
 
   const d1_concat = `${AID}:${sensorData.b1}:${T1}`;
   const d1_left = computeHash(d1_concat);
-  const D1 = xorHexWithInt(d1_left, r1);
-  console.log(`D1: ${D1}, ${d1_left} ${r1} `);
+  const D1 = xorHexWithHex(d1_left, r1_hex);
 
-  const D2_concat = `${r1}:${T1}:${sensorData.b0}`;
+  console.log(`D1: ${D1}, ${d1_left} ${r1_hex} `);
+
+  const D2_concat = `${r1_hex}:${T1}:${sensorData.b0}`;
   const D2 = computeHash(D2_concat);
   console.log(`D2: ${D2}`);
 
@@ -168,10 +192,98 @@ async function sendRandom() {
     }
   });
 
-  
+  const authStep2Result = await receiveFromGateway.json();
+  const M2 = authStep2Result["M2"];
 
+  console.log(`Verification process complete: ${JSON.stringify(M2)}`);
+  
+  const T3 = now.getTime();
+const T2 = Number(M2["T2"]);
+
+if (Math.abs(T3 - T2) <= T_diff) {
+  console.log("Within the time limit");
+
+  // -----------------------------
+  // Computing r2
+  // -----------------------------
+  const r2_right_concat = `${r1_hex}:${T2}`;
+  const r2_right_hash = computeHash(r2_right_concat);
+  const D3_from_gateway = M2["D3"];
+
+  const r2_sensor = xorHexWithHex(D3_from_gateway, r2_right_hash);
+  console.log("r2:", r2_sensor);
+
+  // -----------------------------
+  // Computing idx
+  // -----------------------------
+  const D4_from_gateway = M2["D4"];
+
+  const idx_right_concat = `${sensorData.b1}:${r2_sensor}`;
+  const idx_right_hash = computeHash(idx_right_concat);
+
+  const idx_xor_part = xorHexWithHex(D4_from_gateway, idx_right_hash);
+
+  console.log("idx xor:", idx_xor_part);
+
+  // FIXED: proper BigInt subtraction (NO comma operator bug)
+  const mod = 2n ** 256n;
+
+  const idx_sensor =
+    (BigInt("0x" + idx_xor_part) -
+     BigInt("0x" + r1_hex) +
+     mod) % mod;
+
+  const idx_sensor_hex = idx_sensor.toString(16).padStart(64, "0");
+
+  console.log("idx calculated:", idx_sensor_hex);
+
+  // -----------------------------
+  // Computing D5
+  // -----------------------------
+  const D5_concat = `${idx_sensor_hex}:${r2_sensor}:${sensorData.b0}:${r1_hex}`;
+  const D5_hash = computeHash(D5_concat);
+
+  const D5_gateway = M2["D5"];
+
+  console.log(`D5 (sensor): ${D5_hash}`);
+  console.log(`D5 (gateway): ${D5_gateway}`);
 }
-document.getElementById("sendBtn").addEventListener("click", sendRandom);
+
+  // Authentication - Step 3
+/*
+  const T3 = now.getTime();
+  const T2 = M2["T2"];
+
+  if(Math.abs(T3-T2) <= T_diff) {
+    console.log("Within the time limit");
+
+    // Computing r2
+    const r2_right_concat = `${r1_hex}:${T2}`;
+    const r2_right_hash = computeHash(r2_right_concat);
+    const D3_from_gateway = M2["D3"];
+
+    const r2_sensor = xorHexWithHex(D3_from_gateway, r2_right_hash);
+    console.log(r2_sensor);
+
+    // Computing idx
+    const D4_from_gateway = M2["D4"];
+    const idx_right_concat = `${sensorData.b1}:${r2_sensor}`;
+    const idx_right_hash = computeHash(idx_right_concat);
+    const idx_xor_part = xorHexWithHex(D4_from_gateway, idx_right_hash);
+
+    console.log(`idx xor: ${idx_xor_part}`);
+    const idx_sensor = (hexSub256(idx_xor_part, r1_hex), r2_sensor);
+    console.log(`idx calculated: ${idx_sensor}`);
+
+    // Computing D5 
+    const D5_concat = `${idx_sensor}:${r2_sensor}:${sensorData.b0}:${r1_hex}`;
+    const D5_hash = computeHash(D5_concat);
+
+    const D5_gateway = M2["D5"];
+    console.log(`D5 (sensor): ${D5_hash}\nD5 (gateway): ${D5_gateway}`);
+  }*/
+}
+document.getElementById("sendBtn").addEventListener("click", authenticateLAKDToGateway);
 </script>
 
 </body>
